@@ -1,13 +1,7 @@
----
-
-## `app.py`  (GrantWriter AI: draft + score + export + save/load)
-
-```python
 import os, io, json, datetime
 from dataclasses import dataclass, asdict
 from typing import Dict, List
 import streamlit as st
-import pandas as pd
 from dotenv import load_dotenv
 from docx import Document
 from docx.shared import Pt, Inches
