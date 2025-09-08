@@ -1,6 +1,55 @@
 services:
   - type: web
+    name: grantwriter-ai
     env: python
-    buildCommand: pip install -r requirements.txt
+    plan: starter
+    region: oregon
+    autoDeploy: true
+
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
     startCommand: streamlit run GrantWriter.py --server.port $PORT --server.address 0.0.0.0
 
+    # Persist app settings (Admin page) and seen-grants state
+    disks:
+      - name: appdata
+        mountPath: /opt/render/project/src/data
+        sizeGB: 1
+
+    envVars:
+      # --- Required ---
+      - key: OPENAI_API_KEY
+        sync: false  # set in dashboard
+
+      # --- Branding (safe defaults; override in dashboard if you like) ---
+      - key: COUNCIL_NAME
+        value: Wyndham City Council
+      - key: COUNCIL_SHORT
+        value: wyndham
+      - key: COUNCIL_BRAND_PRIMARY
+        value: "#0055A4"
+      - key: COUNCIL_BRAND_SECONDARY
+        value: "#00AEEF"
+
+      # --- Simple access gate for demo/admin pages ---
+      - key: ACCESS_CODE
+        value: wyndham-2025
+
+      # --- Grant Discovery defaults (can be edited in Admin Settings page) ---
+      - key: GRANT_FEEDS
+        value: "https://www.grants.gov.au/rss"
+      - key: DISCOVERY_KEYWORDS
+        value: "community,youth,transport,roads,waste,library,climate,arts,accessibility"
+      - key: DISCOVERY_REGION_TERMS
+        value: "Victoria,VIC,Wyndham,Melbourne,Australia"
+      - key: ALERT_SLACK_WEBHOOK
+        sync: false  # optional; add in dashboard if you want Slack alerts
+
+      # --- Org contact for cover letters (optional defaults) ---
+      - key: ORG_CONTACT_NAME
+        value: Grants Manager
+      - key: ORG_CONTACT_TITLE
+        value: Wyndham City Council
+      - key: ORG_CONTACT_EMAIL
+        value: grants@wyndham.vic.gov.au
+      - key: ORG_CONTACT_PHONE
+        value: "(03) 1234 5678"
