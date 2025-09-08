@@ -1,24 +1,5 @@
 services:
   - type: web
-    name: grantwriter-ai
     env: python
-    plan: starter
     buildCommand: pip install -r requirements.txt
     startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0
-    envVars:
-      - key: OPENAI_API_KEY
-        sync: false
-      - key: COUNCIL_NAME
-        value: Wyndham City Council
-      - key: COUNCIL_SHORT
-        value: wyndham
-      - key: COUNCIL_BRAND_PRIMARY
-        value: "#0055A4"
-      - key: COUNCIL_BRAND_SECONDARY
-        value: "#00AEEF"
-      - key: GRANT_FEEDS
-        value: "https://www.grants.gov.au/rss"
-      - key: DISCOVERY_KEYWORDS
-        value: "community,youth,transport,roads,waste,library,climate,arts,accessibility"
-      - key: DISCOVERY_REGION_TERMS
-        value: "Victoria,VIC,Wyndham,Melbourne,Australia"
