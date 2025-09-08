@@ -7,13 +7,6 @@ from docx import Document
 from docx.shared import Pt, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
-# --- OpenAI client (v1) ---
-try:
-    from openai import OpenAI
-except ImportError:
-    st.write("Install deps first: pip install -r requirements.txt")
-    st.stop()
-
 # ===== ENV =====
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
@@ -21,22 +14,68 @@ COUNCIL_NAME = os.getenv("COUNCIL_NAME", "Your Council")
 COUNCIL_SHORT = os.getenv("COUNCIL_SHORT", "council")
 BRAND_PRIMARY = os.getenv("COUNCIL_BRAND_PRIMARY", "#0D47A1")
 BRAND_SECONDARY = os.getenv("COUNCIL_BRAND_SECONDARY", "#1976D2")
-if not OPENAI_API_KEY:
-    st.error("Missing OPENAI_API_KEY in .env")
-    st.stop()
-client = OpenAI(api_key=OPENAI_API_KEY)
 
+# --- OpenAI client (v1) ---
+try:
+    from openai import OpenAI
+    client = OpenAI(api_key=OPENAI_API_KEY)
+except Exception:
+    client = None
+
+# ===== STREAMLIT PAGE =====
 st.set_page_config(page_title=f"GrantWriter AI – {COUNCIL_NAME}", page_icon="📝", layout="wide")
+
+# ===== ACCESS GATE & SETTINGS =====
+DATA_DIR = "data"
+SETTINGS_PATH = os.path.join(DATA_DIR, "settings.json")
+os.makedirs(DATA_DIR, exist_ok=True)
+
+def load_settings() -> dict:
+    if os.path.exists(SETTINGS_PATH):
+        try:
+            with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {
+        "contact": {
+            "name": os.getenv("ORG_CONTACT_NAME", ""),
+            "title": os.getenv("ORG_CONTACT_TITLE", ""),
+            "email": os.getenv("ORG_CONTACT_EMAIL", ""),
+            "phone": os.getenv("ORG_CONTACT_PHONE", ""),
+        }
+    }
+
+def require_access():
+    code_env = os.getenv("ACCESS_CODE", "").strip()
+    if not code_env:
+        return
+    if st.session_state.get("auth_ok"):
+        return
+    with st.sidebar:
+        st.markdown("### 🔒 Access")
+        inp = st.text_input("Access code", type="password")
+        if st.button("Unlock"):
+            if inp == code_env:
+                st.session_state["auth_ok"] = True
+                st.rerun()
+            else:
+                st.error("Wrong code.")
+    st.stop()
+
+require_access()
+settings = load_settings()
+
+# ===== THEME / STYLES =====
 st.markdown(
     f"""
     <style>
-    :root {{ --brand-primary: {BRAND_PRIMARY}; --brand-secondary: {BRAND_SECONDARY}; }}
+    :root {{ --brand-primary:{BRAND_PRIMARY}; --brand-secondary:{BRAND_SECONDARY}; }}
     .brand-card {{ border:1px solid #e5e7eb; padding:14px; border-radius:14px; background:#fff; box-shadow:0 2px 16px #0000000f; }}
     .app-title {{ font-size:1.8rem; font-weight:700; margin-bottom:.25rem; }}
     .app-subtitle {{ color:#555; margin-bottom:1rem; }}
     .pill {{ border:1px solid #e5e7eb; border-radius:999px; padding:4px 10px; font-size:.8rem; margin-right:6px; }}
     .section-title {{ font-weight:700; margin:.5rem 0 .25rem; font-size:1.05rem; }}
-    .small-muted {{ color:#6b7280; font-size:.85rem; }}
     </style>
     """,
     unsafe_allow_html=True,
@@ -64,6 +103,7 @@ SECTIONS: List[str] = [
     "Project Timeline","Partnerships & Governance"
 ]
 
+# ===== PROMPTS =====
 def sys_prompt() -> str:
     return f"""You are a senior grant writer for {COUNCIL_NAME} in Australia.
 Write precise, persuasive, criteria-aligned responses in clear, formal English.
@@ -111,25 +151,39 @@ Return strict JSON:
 {{"score": <int>,"strengths":["..."],"gaps":["..."],"suggestions":["..."]}}
 """
 
-def gpt_text(u: str, model: str = "gpt-4o-mini") -> str:
+# ===== OPENAI HELPERS =====
+def gpt_text(user_prompt: str, model: str = "gpt-4o-mini") -> str:
+    if client is None or not OPENAI_API_KEY:
+        return "⚠️ OPENAI_API_KEY missing."
     r = client.chat.completions.create(
         model=model,
-        messages=[{"role":"system","content":sys_prompt()},{"role":"user","content":u}],
+        messages=[{"role":"system","content":sys_prompt()},
+                  {"role":"user","content":user_prompt}],
         temperature=0.3, max_tokens=700,
     )
     return r.choices[0].message.content.strip()
 
-def gpt_json(u: str, model: str = "gpt-4o-mini") -> Dict:
+def gpt_json(user_prompt: str, model: str = "gpt-4o-mini") -> Dict:
+    if client is None or not OPENAI_API_KEY:
+        return {"score":0,"strengths":[],"gaps":["No API key"],"suggestions":[]}
     r = client.chat.completions.create(
         model=model,
-        messages=[{"role":"system","content":"Output strict JSON only."},{"role":"user","content":u}],
+        messages=[{"role":"system","content":"Output strict JSON only."},
+                  {"role":"user","content":user_prompt}],
         temperature=0.0, response_format={"type":"json_object"}, max_tokens=700,
     )
-    import json
+    import json as _json
     try:
-        return json.loads(r.choices[0].message.content)
+        return _json.loads(r.choices[0].message.content)
     except Exception:
         return {"score":0,"strengths":[],"gaps":["Parse error"],"suggestions":[]}
+
+# ===== EXPORT HELPERS =====
+def load_logo_bytes() -> bytes | None:
+    path = os.path.join("assets","council_logo.png")
+    if os.path.exists(path):
+        with open(path,"rb") as f: return f.read()
+    return None
 
 def build_docx(sections: Dict[str,str], p: Project, logo_bytes: bytes | None) -> bytes:
     doc = Document()
@@ -144,28 +198,57 @@ def build_docx(sections: Dict[str,str], p: Project, logo_bytes: bytes | None) ->
         try: os.remove(tmp)
         except Exception: pass
 
-    t = doc.add_paragraph(); r = t.add_run(f"{COUNCIL_NAME} – Grant Application Draft")
-    r.bold=True; r.font.size = Pt(18)
+    title = doc.add_paragraph(); r = title.add_run(f"{COUNCIL_NAME} – Grant Application Draft")
+    r.bold = True; r.font.size = Pt(18)
     meta = doc.add_paragraph()
-    meta.add_run("Project: ").bold=True; meta.add_run(p.title + "\n")
-    meta.add_run("Generated: ").bold=True; meta.add_run(datetime.datetime.now().strftime("%Y-%m-%d %H:%M"))
+    meta.add_run("Project: ").bold = True; meta.add_run(p.title + "\n")
+    meta.add_run("Generated: ").bold = True; meta.add_run(datetime.datetime.now().strftime("%Y-%m-%d %H:%M"))
     doc.add_paragraph("")
 
-    for k,v in sections.items():
-        h = doc.add_paragraph(); rh = h.add_run(k); rh.bold=True; rh.font.size=Pt(14)
+    for k, v in sections.items():
+        h = doc.add_paragraph(); rh = h.add_run(k); rh.bold = True; rh.font.size = Pt(14)
         doc.add_paragraph((v or "").strip()); doc.add_paragraph("")
+
     bio = io.BytesIO(); doc.save(bio); bio.seek(0); return bio.read()
 
-def markdown_bytes(sections: Dict[str,str]) -> bytes:
-    md = "# " + COUNCIL_NAME + " – Grant Application Draft\n\n"
-    for k,v in sections.items(): md += f"## {k}\n{(v or '').strip()}\n\n"
-    return md.encode("utf-8")
+def build_cover_letter_docx(project: Project, contact: dict, logo_bytes: bytes | None) -> bytes:
+    doc = Document()
+    tmp = None
+    if logo_bytes:
+        tmp = "~tmp_logo.png"
+        with open(tmp,"wb") as f: f.write(logo_bytes)
+        try:
+            doc.add_picture(tmp, width=Inches(1.2))
+            doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        except Exception: pass
+        try: os.remove(tmp)
+        except Exception: pass
 
-def load_logo_bytes() -> bytes | None:
-    path = os.path.join("assets","council_logo.png")
-    if os.path.exists(path):
-        with open(path,"rb") as f: return f.read()
-    return None
+    p = doc.add_paragraph(); r = p.add_run(f"{COUNCIL_NAME} – Cover Letter")
+    r.bold = True; r.font.size = Pt(18)
+
+    doc.add_paragraph(datetime.datetime.now().strftime("%d %B %Y"))
+    doc.add_paragraph("")
+    doc.add_paragraph("To the Grants Assessment Panel,\n")
+
+    b = doc.add_paragraph()
+    b.add_run(f"Re: {project.title}\n\n").bold = True
+    b.add_run(
+        f"{COUNCIL_NAME} is pleased to submit the attached application for {project.title}. "
+        f"The project addresses the following need: {project.need[:300]}... "
+        f"It will benefit {project.audience[:200]} by delivering: {project.objectives[:250]}.\n\n"
+        f"Summary: {project.summary}\n\n"
+        "We appreciate your consideration and are available for any clarifications.\n\n"
+    )
+
+    c = contact or {}
+    sig = doc.add_paragraph()
+    sig.add_run(c.get("name","")).bold = True
+    sig.add_run(f"\n{c.get('title','')}")
+    doc.add_paragraph(c.get("email",""))
+    doc.add_paragraph(c.get("phone",""))
+
+    bio = io.BytesIO(); doc.save(bio); bio.seek(0); return bio.read()
 
 # ===== HEADER =====
 st.markdown(f"""
@@ -192,7 +275,8 @@ with st.sidebar:
         drafts = st.session_state.get("application", {})
         blob = {"project": asdict(proj), "criteria": criteria, "sections": use_sections, "drafts": drafts}
         if save_name.strip():
-            with open(save_name.strip(),"w",encoding="utf-8") as f: json.dump(blob,f,ensure_ascii=False,indent=2)
+            with open(save_name.strip(),"w",encoding="utf-8") as f:
+                json.dump(blob, f, ensure_ascii=False, indent=2)
             st.success(f"Saved to {save_name.strip()}")
         else:
             st.warning("Enter filename like my-grant.json")
@@ -210,11 +294,12 @@ with st.sidebar:
             st.error(f"Failed to load JSON: {e}")
 
 # ===== FORM =====
-if "project" not in st.session_state: st.session_state.project = Project()
+if "project" not in st.session_state:
+    st.session_state.project = Project()
 p: Project = st.session_state.project
 
 st.markdown("### 🧾 Project Details")
-c1,c2 = st.columns(2)
+c1, c2 = st.columns(2)
 with c1:
     p.title = st.text_input("Project Title", value=p.title)
     p.summary = st.text_area("Short Summary (2–3 sentences)", height=90, value=p.summary)
@@ -230,6 +315,7 @@ with c2:
 p.timeline = st.text_input("High-level Timeline", value=p.timeline)
 p.partners = st.text_area("Partners & Governance", height=90, value=p.partners)
 
+# hydrate from loaded file
 if "loaded_criteria" in st.session_state and st.session_state.loaded_criteria and not criteria.strip():
     criteria = st.session_state.loaded_criteria
 if "loaded_sections" in st.session_state and st.session_state.loaded_sections and use_sections == SECTIONS:
@@ -238,29 +324,32 @@ if "loaded_sections" in st.session_state and st.session_state.loaded_sections an
 st.markdown("---")
 
 # ===== GENERATE =====
-if "application" not in st.session_state: st.session_state.application = {}
+if "application" not in st.session_state:
+    st.session_state.application = {}
 logo_bytes = load_logo_bytes()
 
 if st.button("🚀 Generate Draft + Score Sections", type="primary", use_container_width=True):
-    if not p.title or not p.summary:
+    if not OPENAI_API_KEY:
+        st.error("Add OPENAI_API_KEY to .env / Render env.")
+    elif not p.title or not p.summary:
         st.warning("Please add at least Project Title and Short Summary.")
     else:
-        out: Dict[str,str] = {}
+        out: Dict[str, str] = {}
         prog = st.progress(0.0, text="Generating…")
         for i, sec in enumerate(use_sections, start=1):
             with st.spinner(f"Generating: {sec}"):
                 out[sec] = gpt_text(draft_prompt(sec, p, criteria), model=model)
-            prog.progress(i/len(use_sections), text=f"Generated {i}/{len(use_sections)}")
+            prog.progress(i / len(use_sections), text=f"Generated {i}/{len(use_sections)}")
         st.session_state.application = out
         st.success("Draft generated. Scroll down to review & export.")
 
 # ===== REVIEW / SCORE / EXPORT =====
-drafts: Dict[str,str] = st.session_state.get("application", {})
+drafts: Dict[str, str] = st.session_state.get("application", {})
 if drafts:
     st.markdown("### ✍️ Review, Score & Export")
-    edited: Dict[str,str] = {}
-    tabs = st.tabs([f"{i+1}. {k}" for i,k in enumerate(drafts)])
-    for (k,v), tb in zip(drafts.items(), tabs):
+    edited: Dict[str, str] = {}
+    tabs = st.tabs([f"{i+1}. {k}" for i, k in enumerate(drafts)])
+    for (k, v), tb in zip(drafts.items(), tabs):
         with tb:
             new = st.text_area(f"Edit: {k}", value=v, height=240, key=f"edit_{k}")
             if st.button(f"Score '{k}'", key=f"score_{k}"):
@@ -268,11 +357,11 @@ if drafts:
                 st.session_state[f"sc_{k}"] = res
             res = st.session_state.get(f"sc_{k}")
             if res:
-                st.write(f"**Score:** {res.get('score',0)}/100")
+                st.write(f"**Score:** {res.get('score', 0)}/100")
                 c = st.columns(3)
-                c[0].write("**Strengths**"); c[0].write("\n".join(res.get("strengths",[])) or "—")
-                c[1].write("**Gaps**"); c[1].write("\n".join(res.get("gaps",[])) or "—")
-                c[2].write("**Suggestions**"); c[2].write("\n".join(res.get("suggestions",[])) or "—")
+                c[0].write("**Strengths**"); c[0].write("\n".join(res.get("strengths", [])) or "—")
+                c[1].write("**Gaps**"); c[1].write("\n".join(res.get("gaps", [])) or "—")
+                c[2].write("**Suggestions**"); c[2].write("\n".join(res.get("suggestions", [])) or "—")
             edited[k] = new
 
     st.markdown("---")
@@ -280,12 +369,25 @@ if drafts:
     with cE1:
         if st.button("⬇️ Download DOCX", use_container_width=True):
             b = build_docx(edited, p, logo_bytes)
-            st.download_button("Download Grant Draft (DOCX)", data=b,
+            st.download_button(
+                "Download Grant Draft (DOCX)", data=b,
                 file_name=f"{COUNCIL_SHORT}_grant_draft_{datetime.datetime.now().strftime('%Y%m%d')}.docx",
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
     with cE2:
-        md = "# "+COUNCIL_NAME+" – Grant Application Draft\n\n" + "\n".join([f"## {k}\n{v}\n" for k,v in edited.items()])
-        st.download_button("⬇️ Download Markdown", data=md.encode("utf-8"),
-            file_name=f"{COUNCIL_SHORT}_grant_draft_{datetime.datetime.now().strftime('%Y%m%d')}.md", mime="text/markdown")
+        md = "# " + COUNCIL_NAME + " – Grant Application Draft\n\n" + "\n".join([f"## {k}\n{v}\n" for k, v in edited.items()])
+        st.download_button(
+            "⬇️ Download Markdown", data=md.encode("utf-8"),
+            file_name=f"{COUNCIL_SHORT}_grant_draft_{datetime.datetime.now().strftime('%Y%m%d')}.md", mime="text/markdown",
+        )
+
+    with st.expander("📄 Optional: Cover Letter"):
+        if st.button("⬇️ Generate Cover Letter (DOCX)"):
+            cl = build_cover_letter_docx(p, settings.get("contact", {}), logo_bytes)
+            st.download_button(
+                "Download Cover Letter (DOCX)", data=cl,
+                file_name=f"{COUNCIL_SHORT}_cover_letter_{datetime.datetime.now().strftime('%Y%m%d')}.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
 else:
     st.info("Fill details, paste criteria, then click **Generate**.")
